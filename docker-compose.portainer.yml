@@ -5,6 +5,7 @@
 # Diferença do docker-compose.prod.yml:
 # - mem_limit convertido para deploy.resources.limits.memory
 # - Removido platform: linux/amd64 (Portainer não suporta)
+# - depends_on como lista simples (Portainer requer isto)
 #
 #   docker compose -f docker-compose.portainer.yml --env-file .env up -d
 
@@ -17,25 +18,13 @@ x-logging: &default-logging
 services:
   app:
     # Teto de memória — 335 MiB de pico MEDIDO nesta VPS.
-    #
-    # Sem ele o contêiner é ilimitado, e numa VPS de 3,8 GB isso não é teoria:
-    # um contêiner ALHEIO (agente da hospedagem, fora deste compose) registrou
-    # pico de 3.068 MiB no mesmo host. Quando a RAM acaba, o OOM killer escolhe
-    # a vítima por PONTUAÇÃO — quem cresceu mais rápido —, não por importância:
-    # o que morre pode ser o CRM.
-    #
-    # O teto não impede o pico legítimo; impede que UM serviço leve a máquina
-    # inteira. Estourá-lo mata só quem estourou, e o `restart: unless-stopped`
-    # o traz de volta — falha isolada em vez de queda geral.
     image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
     pull_policy: ${APP_PULL_POLICY:-always}
     restart: unless-stopped
     env_file: .env
     depends_on:
-      srh:
-        condition: service_started
-      waha:
-        condition: service_started
+      - srh
+      - waha
     healthcheck:
       # Probe TCP puro (node existe na imagem; curl/nc não). NÃO usar /api/v1/health:
       # ele dá 503 se WAHA/Redis caem, o que deixaria o app "unhealthy" e derrubaria
@@ -58,16 +47,6 @@ services:
   # Worker 24/7 do agent-engine (fusão Vendaval) — cérebro do agente SDR.
   worker:
     # Teto de memória — 230 MiB de pico MEDIDO nesta VPS.
-    #
-    # Sem ele o contêiner é ilimitado, e numa VPS de 3,8 GB isso não é teoria:
-    # um contêiner ALHEIO (agente da hospedagem, fora deste compose) registrou
-    # pico de 3.068 MiB no mesmo host. Quando a RAM acaba, o OOM killer escolhe
-    # a vítima por PONTUAÇÃO — quem cresceu mais rápido —, não por importância:
-    # o que morre pode ser o CRM.
-    #
-    # O teto não impede o pico legítimo; impede que UM serviço leve a máquina
-    # inteira. Estourá-lo mata só quem estourou, e o `restart: unless-stopped`
-    # o traz de volta — falha isolada em vez de queda geral.
     image: ${WORKER_IMAGE:-ghcr.io/melgarafael/deskcomm-worker:stable}
     pull_policy: ${WORKER_PULL_POLICY:-always}
     build:
@@ -95,16 +74,6 @@ services:
 
   waha:
     # Teto de memória — 893 MiB de pico MEDIDO nesta VPS.
-    #
-    # Sem ele o contêiner é ilimitado, e numa VPS de 3,8 GB isso não é teoria:
-    # um contêiner ALHEIO (agente da hospedagem, fora deste compose) registrou
-    # pico de 3.068 MiB no mesmo host. Quando a RAM acaba, o OOM killer escolhe
-    # a vítima por PONTUAÇÃO — quem cresceu mais rápido —, não por importância:
-    # o que morre pode ser o CRM.
-    #
-    # O teto não impede o pico legítimo; impede que UM serviço leve a máquina
-    # inteira. Estourá-lo mata só quem estourou, e o `restart: unless-stopped`
-    # o traz de volta — falha isolada em vez de queda geral.
     image: ${WAHA_IMAGE:-devlikeapro/waha:latest-2026.7.2}
     restart: unless-stopped
     environment:
@@ -146,14 +115,6 @@ services:
   srh:
     # serverless-redis-http: fala o REST do Upstash sobre o redis normal, mantendo
     # o SDK @upstash/redis sem tocar código.
-    #
-    # Pinado por DIGEST, não por tag, e o motivo é específico: `latest` e `0.0.10`
-    # NÃO são a mesma imagem (5b0bb923… vs 65128347…), então trocar `:latest` por
-    # `:0.0.10` mudaria o binário que roda no parque — que é exatamente o risco
-    # que a pendência T6 mandava validar antes (encoding base64 do rate limit).
-    # O digest congela o que já está em produção HOJE: zero mudança de conteúdo,
-    # e o `:latest` deixa de poder mudar sozinho debaixo de todo mundo.
-    # Quando a T6 for validada, isto vira `:0.0.10` e o comentário sai.
     image: hiett/serverless-redis-http@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150
     restart: unless-stopped
     environment:
@@ -161,20 +122,13 @@ services:
       SRH_TOKEN: ${SRH_TOKEN}
       SRH_CONNECTION_STRING: "redis://redis:6379"
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis
     logging: *default-logging
     networks: [internal]
 
   scheduler:
     # Cron sem docker.sock: crond interno batendo curl na rede interna.
     # Resolução de 1 min (= paridade com os crons da Vercel).
-    #
-    # A lista de crons mora em docker/scheduler/entrypoint.sh, não mais aqui. O
-    # `command:` inline instalava curl e tzdata (`apk add`) a CADA start — num
-    # serviço `restart: unless-stopped`, isso significa que o cron do cliente só
-    # voltava se a VPS tivesse internet e o mirror do Alpine estivesse de pé,
-    # justamente no momento em que a máquina está se recuperando de algo.
     image: ${SCHEDULER_IMAGE:-ghcr.io/melgarafael/deskcomm-scheduler:stable}
     pull_policy: ${SCHEDULER_PULL_POLICY:-always}
     build:
@@ -182,8 +136,7 @@ services:
       dockerfile: Dockerfile.scheduler
     restart: unless-stopped
     depends_on:
-      app:
-        condition: service_healthy
+      - app
     environment:
       TZ: UTC
       INTERNAL_SECRET: ${INTERNAL_SECRET}
@@ -204,8 +157,7 @@ services:
       - caddy-data:/data           # certificados Let's Encrypt (persistir!)
       - caddy-config:/config
     depends_on:
-      app:
-        condition: service_healthy
+      - app
     logging: *default-logging
     networks: [internal]
 
