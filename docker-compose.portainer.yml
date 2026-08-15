@@ -6,6 +6,8 @@
 # - mem_limit convertido para deploy.resources.limits.memory
 # - Removido platform: linux/amd64 (Portainer não suporta)
 # - depends_on como lista simples (Portainer requer isto)
+# - Removido pull_policy (o validador de stacks do Portainer rejeita a chave;
+#   para puxar a imagem mais nova, use a opção "Re-pull image" ao atualizar a stack)
 #
 #   docker compose -f docker-compose.portainer.yml --env-file .env up -d
 
@@ -19,7 +21,6 @@ services:
   app:
     # Teto de memória — 335 MiB de pico MEDIDO nesta VPS.
     image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
-    pull_policy: ${APP_PULL_POLICY:-always}
     restart: unless-stopped
     env_file: .env
     depends_on:
@@ -48,7 +49,6 @@ services:
   worker:
     # Teto de memória — 230 MiB de pico MEDIDO nesta VPS.
     image: ${WORKER_IMAGE:-ghcr.io/melgarafael/deskcomm-worker:stable}
-    pull_policy: ${WORKER_PULL_POLICY:-always}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -130,7 +130,6 @@ services:
     # Cron sem docker.sock: crond interno batendo curl na rede interna.
     # Resolução de 1 min (= paridade com os crons da Vercel).
     image: ${SCHEDULER_IMAGE:-ghcr.io/melgarafael/deskcomm-scheduler:stable}
-    pull_policy: ${SCHEDULER_PULL_POLICY:-always}
     build:
       context: .
       dockerfile: Dockerfile.scheduler
