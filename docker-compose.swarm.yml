@@ -1,0 +1,284 @@
+# DeskcommCRM — stackfile Docker Swarm (deploy via Portainer em ambiente swarm)
+# Sobe: caddy (HTTPS) → app (Next standalone) + waha + redis+srh + scheduler.
+# Só o Caddy publica portas (80/443). Todo o resto vive na rede interna.
+#
+# QUANDO USAR ESTE ARQUIVO:
+# O docker-compose.portainer.yml é para ambientes Docker Standalone. Se o seu
+# endpoint no Portainer é um swarm (`docker stack deploy`), este arquivo é o
+# certo: rede overlay, deploy.resources no lugar de mem_limit/restart, sem
+# build/depends_on (não suportados por stack deploy), Caddyfile via configs
+# (bind mount relativo é rejeitado em swarm).
+#
+# VARIÁVEIS DE AMBIENTE — ONDE ELAS VIVEM:
+# No Portainer: Stacks → sua stack → editar → Environment variables. Cada
+# ${VAR} abaixo resolve da UI (interpolação do stack deploy). Obrigatórias sem
+# default quebram o boot do app com erro claro se ficarem vazias.
+# Em CLI (fora do Portainer):
+#
+#   docker stack deploy -c docker-compose.swarm.yml deskcommcrm
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"     # rotação: evita que o log encha o disco do VPS
+    max-file: "3"
+
+services:
+  app:
+    # Teto de memória — 335 MiB de pico MEDIDO nesta VPS.
+    image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
+    environment:
+      # --- Supabase (obrigatórias — lib/env.ts) ---
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      # --- Cron / interno ---
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+      INTERNAL_CRON_SECRET: ${INTERNAL_CRON_SECRET:-}
+      # --- Encryption keys (pgcrypto) ---
+      CPF_ENCRYPTION_KEY: ${CPF_ENCRYPTION_KEY}
+      NUVEMSHOP_OAUTH_ENCRYPTION_KEY: ${NUVEMSHOP_OAUTH_ENCRYPTION_KEY:-}
+      WAHA_BYO_ENCRYPTION_KEY: ${WAHA_BYO_ENCRYPTION_KEY}
+      AI_CRED_AES_KEY: ${AI_CRED_AES_KEY}
+      # --- Postgres direto (supabase) ---
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      # --- WAHA ---
+      WAHA_API_BASE_URL: ${WAHA_API_BASE_URL}
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_HMAC_SECRET: ${WAHA_HMAC_SECRET:-}
+      WAHA_WEBHOOK_REQUIRE_SIGNATURE: ${WAHA_WEBHOOK_REQUIRE_SIGNATURE:-false}
+      WAHA_WEBHOOK_BASE_URL: ${WAHA_WEBHOOK_BASE_URL}
+      # --- Upstash Redis ---
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
+      # --- AI providers (opcionais; vazias = agente mudo por config) ---
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      AI_GATEWAY_BASE_URL: ${AI_GATEWAY_BASE_URL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
+      VERCEL_AI_GATEWAY_URL: ${VERCEL_AI_GATEWAY_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # --- Workers / dispatcher ---
+      AGENT_DISPATCH_CONSUMER: ${AGENT_DISPATCH_CONSUMER:-engine}
+      EVENT_LOG_WORKER_ENABLED: ${EVENT_LOG_WORKER_ENABLED:-false}
+      INTERNAL_AGENT_RUN_STUB: ${INTERNAL_AGENT_RUN_STUB:-false}
+      # --- Observabilidade ---
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      # --- E-mail (Resend) ---
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      # --- Impersonate ---
+      IMPERSONATE_COOKIE_SECRET: ${IMPERSONATE_COOKIE_SECRET:-}
+      # --- LGPD ---
+      LGPD_SIGNING_KEY: ${LGPD_SIGNING_KEY:-}
+      LGPD_EXPORT_EXPIRES_HOURS: ${LGPD_EXPORT_EXPIRES_HOURS:-72}
+      LGPD_DPO_EMAIL: ${LGPD_DPO_EMAIL:-}
+      # --- Nuvemshop (opcional) ---
+      NUVEMSHOP_ENABLED: ${NUVEMSHOP_ENABLED:-false}
+      NUVEMSHOP_APP_ID: ${NUVEMSHOP_APP_ID:-}
+      NUVEMSHOP_CLIENT_ID: ${NUVEMSHOP_CLIENT_ID:-}
+      NUVEMSHOP_CLIENT_SECRET: ${NUVEMSHOP_CLIENT_SECRET:-}
+      # --- App URLs ---
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+      NEXT_PUBLIC_ADMIN_URL: ${NEXT_PUBLIC_ADMIN_URL}
+      # --- Marca da instalação (white-label) ---
+      APP_NAME: ${APP_NAME:-}
+      APP_LOGO_URL: ${APP_LOGO_URL:-}
+      APP_ACCENT_HEX: ${APP_ACCENT_HEX:-}
+      # --- Meta Cloud API (opcional) ---
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_WABA_ID: ${META_WABA_ID:-}
+      META_PHONE_NUMBER_ID: ${META_PHONE_NUMBER_ID:-}
+      META_SYSTEM_USER_TOKEN: ${META_SYSTEM_USER_TOKEN:-}
+      META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN:-}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v22.0}
+      # --- Canal via intermediário (Zernio, opcional) ---
+      ZERNIO_ACCOUNT_ID: ${ZERNIO_ACCOUNT_ID:-}
+      ZERNIO_API_KEY: ${ZERNIO_API_KEY:-}
+      ZERNIO_API_BASE_URL: ${ZERNIO_API_BASE_URL:-}
+      # --- Janela do retorno agendado (defaults em lib/followup/janela.ts) ---
+      FOLLOWUP_MIN_AHEAD_MS: ${FOLLOWUP_MIN_AHEAD_MS:-}
+      FOLLOWUP_MAX_AHEAD_MS: ${FOLLOWUP_MAX_AHEAD_MS:-}
+      CRON_STAGGER_WINDOW_MS: ${CRON_STAGGER_WINDOW_MS:-}
+    healthcheck:
+      # Probe TCP puro (node existe na imagem; curl/nc não). NÃO usar /api/v1/health:
+      # ele dá 503 se WAHA/Redis caem, o que deixaria o app "unhealthy" e derrubaria
+      # o Caddy junto (blackout total por uma dependência secundária).
+      test: ["CMD", "node", "-e", "require('net').connect(3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging: *default-logging
+    networks: [internal]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 768m
+        reservations:
+          memory: 512m
+      restart_policy:
+        condition: any
+
+
+  # Worker 24/7 do agent-engine (fusão Vendaval) — cérebro do agente SDR.
+  worker:
+    # Teto de memória — 230 MiB de pico MEDIDO nesta VPS.
+    image: ${WORKER_IMAGE:-ghcr.io/melgarafael/deskcomm-worker:stable}
+    environment:
+      # dentro da rede do swarm, o WAHA é o serviço 'waha' na porta interna 3000
+      WAHA_API_BASE_URL: http://waha:3000
+      # Obrigatórias do worker (lib/agent-engine/env.ts) — mesmo Supabase do app.
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      # Chaves LLM de plataforma (opcionais com BYOK; vazias = turno falha com erro instrutivo)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Dono único dos dispatchs — 'engine' (default) = este worker consome.
+      AGENT_DISPATCH_CONSUMER: ${AGENT_DISPATCH_CONSUMER:-engine}
+      # Watchdog de sessão (admin-plane do WAHA) — sem key fica OFF (warn).
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      # Janela do retorno agendado — defaults em lib/followup/janela.ts (vazias = default).
+      FOLLOWUP_MIN_AHEAD_MS: ${FOLLOWUP_MIN_AHEAD_MS:-}
+      FOLLOWUP_MAX_AHEAD_MS: ${FOLLOWUP_MAX_AHEAD_MS:-}
+      CRON_STAGGER_WINDOW_MS: ${CRON_STAGGER_WINDOW_MS:-}
+      # Flywheel agendado — 0 = OFF; default 6h.
+      FLYWHEEL_INTERVAL_MS: ${FLYWHEEL_INTERVAL_MS:-}
+      FLYWHEEL_BATCH_LIMIT: ${FLYWHEEL_BATCH_LIMIT:-}
+      # Contenção de egress — hosts EXTRA além do Supabase/WAHA (CSV). Fail-closed.
+      EGRESS_EXTRA_ALLOWED_HOSTS: ${EGRESS_EXTRA_ALLOWED_HOSTS:-}
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8787/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 512m
+        reservations:
+          memory: 256m
+      restart_policy:
+        condition: any
+
+  waha:
+    # Teto de memória — 893 MiB de pico MEDIDO nesta VPS.
+    image: ${WAHA_IMAGE:-devlikeapro/waha:latest-2026.7.2}
+    environment:
+      # Prefixo sha512: faz o WAHA HASHEAR o X-Api-Key recebido e comparar com este
+      # hash. Sem o prefixo ele compara literal → o app (que manda o plaintext) toma 401.
+      WAHA_API_KEY: "sha512:${WAHA_API_KEY_SHA512}"
+      WHATSAPP_HOOK_URL: ${WAHA_WEBHOOK_BASE_URL}/api/v1/webhooks/waha
+      WHATSAPP_HOOK_EVENTS: "message,message.any,message.ack,message.edited,message.revoked,session.status,state.change"
+      WHATSAPP_HOOK_HMAC: ${WAHA_HMAC_SECRET}
+      # WAHA lê WHATSAPP_DEFAULT_ENGINE (NÃO WAHA_DEFAULT_ENGINE — o nome errado
+      # fazia cair no default WEBJS, engine com browser que trava/corrompe a sessão
+      # quando o WhatsApp Web atualiza; NOWEB é websocket direto, estável e leve).
+      WHATSAPP_DEFAULT_ENGINE: ${WHATSAPP_DEFAULT_ENGINE:-NOWEB}
+      WAHA_DASHBOARD_ENABLED: "false"    # nunca expor o dashboard num template público
+    volumes:
+      - waha-data:/app/.sessions          # sessões pareadas (QR) — perder = re-parear
+      - waha-media:/app/.media
+    logging: *default-logging
+    networks: [internal]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 1280m
+        reservations:
+          memory: 1024m
+      restart_policy:
+        condition: any
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]  # efêmero (rate-limit/debounce)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    logging: *default-logging
+    networks: [internal]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  srh:
+    # serverless-redis-http: fala o REST do Upstash sobre o redis normal, mantendo
+    # o SDK @upstash/redis sem tocar código.
+    image: hiett/serverless-redis-http@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: ${SRH_TOKEN}
+      SRH_CONNECTION_STRING: "redis://redis:6379"
+    logging: *default-logging
+    networks: [internal]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  scheduler:
+    # Cron sem docker.sock: crond interno batendo curl na rede interna.
+    # Resolução de 1 min (= paridade com os crons da Vercel).
+    image: ${SCHEDULER_IMAGE:-ghcr.io/melgarafael/deskcomm-scheduler:stable}
+    environment:
+      TZ: UTC
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+    logging: *default-logging
+    networks: [internal]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - target: 80
+        published: 80
+        mode: host
+      - target: 443
+        published: 443
+        mode: host
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy-data:/data           # certificados Let's Encrypt (persistir!)
+      - caddy-config:/config
+    logging: *default-logging
+    networks: [internal]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+volumes:
+  waha-data:
+  waha-media:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
+    driver: overlay
+
+configs:
+  caddyfile:
+    file: ./Caddyfile
