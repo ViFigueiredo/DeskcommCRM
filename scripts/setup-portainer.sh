@@ -7,25 +7,31 @@
 # "schema do harness ausente no banco" (tabelas job_queue, lead_checkpoints,
 # agent_inbox_items, send_ledger) e/ou sem admin para logar.
 #
-# Este script encapsula os dois passos de banco que faltam, uma única vez:
+# Este script encapsula os dois passos de banco que faltam:
 #   1. aplica o supabase/baseline.sql (idempotente — cria o schema inteiro)
 #   2. cria o 1º dono no Auth + promove a super-admin de plataforma
 #
-# Uso (a partir da raiz do repo, ou em qualquer máquina com Docker):
-#   SUPABASE_DB_URL='postgresql://postgres.<projeto>:<senha>@aws-0-<regiao>.pooler.supabase.com:6543/postgres' \
-#   NEXT_PUBLIC_SUPABASE_URL='https://<projeto>.supabase.co' \
-#   SUPABASE_SERVICE_ROLE_KEY='sb_secret_...' \
-#   OWNER_EMAIL='dono@seudominio.com.br' \
-#   OWNER_PASSWORD='senha-forte' \
-#   ./scripts/setup-portainer.sh
+# Ele roda em DOIS contextos, com o mesmo arquivo:
+#   A) Manual, na sua máquina (raiz do repo):
+#        SUPABASE_DB_URL='...pooler.supabase.com:6543/postgres' \
+#        NEXT_PUBLIC_SUPABASE_URL='https://<projeto>.supabase.co' \
+#        SUPABASE_SERVICE_ROLE_KEY='sb_secret_...' \
+#        OWNER_EMAIL='dono@seudominio.com.br' \
+#        OWNER_PASSWORD='senha-forte' \
+#        ./scripts/setup-portainer.sh
+#   B) Automático, no deploy GitOps: o serviço `setup` do docker-compose.swarm.yml
+#      monta este arquivo (configs), roda com PSQL_CMD=psql dentro de um
+#      postgres:17-alpine e sai. Redeploy = re-executa (idempotente; com o
+#      schema já aplicado, pula os passos 1-2 e só garante o dono).
 #
 # Vars opcionais: OWNER_ORG_NAME (default "Minha Empresa"), AI_PROVIDER
 # (anthropic|openrouter|openai), BASELINE_SQL (path do arquivo local; se
 # ausente, baixa do GitHub). Também lê de .env/.env.local se existirem.
 #
 # Requer: Docker (usa `docker run postgres:17-alpine` para o psql — não precisa
-# instalar psql no host). Sem Docker, defina PSQL_CMD='psql' para usar o psql
-# local (major >= 17 recomendado).
+# instalar psql no host). Dentro do container do setup, defina PSQL_CMD=psql
+# (já vem no compose) para usar o psql local. curl se existir; senão wget do
+# busybox (presente no postgres:17-alpine).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -71,41 +77,71 @@ run_psql() { # args do psql
   fi
 }
 
-# ── passo 1: extensões que o schema usa ──────────────────────────────────────
-echo "==> [1/3] Criando extensões (vector, citext, pg_trgm)..."
-run_psql -v ON_ERROR_STOP=1 -c \
-  'create extension if not exists vector with schema public;
-   create extension if not exists citext with schema public;
-   create extension if not exists pg_trgm with schema public;'
-echo "    ok"
+# Baixa arquivos: curl se existir, senão wget (busybox do alpine).
+fetch_url() { # url outfile
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$2" "$1"
+  else
+    wget -q -O "$2" "$1"
+  fi
+}
 
-# ── passo 2: baseline.sql (schema completo, idempotente) ─────────────────────
-BASELINE_SQL="${BASELINE_SQL:-$ROOT/supabase/baseline.sql}"
-if [ ! -f "$BASELINE_SQL" ]; then
-  echo "==> [2/3] Baixando baseline.sql do GitHub (arquivo local ausente)..."
-  BASELINE_SQL="/tmp/baseline-setup-portainer.sql"
-  curl -fsSL -o "$BASELINE_SQL" \
-    "https://raw.githubusercontent.com/ViFigueiredo/DeskcommCRM/main/supabase/baseline.sql"
-fi
+# POST JSON (criação do dono no Auth): curl se existir, senão wget do busybox.
+http_post_json() { # url json
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -X POST "$1" \
+      -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+      -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "$2" >/dev/null 2>&1
+  else
+    wget -q -O /dev/null \
+      --header "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+      --header "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+      --header "Content-Type: application/json" \
+      --post-data "$2" "$1"
+  fi
+}
 
-echo "==> [2/3] Aplicando o schema (baseline.sql) — pode levar 1-2 minutos..."
-if [ -n "${PSQL_CMD:-}" ]; then
-  run_psql -v ON_ERROR_STOP=1 -f "$BASELINE_SQL"
+# ── guarda: schema já aplicado? (redeploy rápido no GitOps) ──────────────────
+# O worker confere exatamente estas quatro tabelas no boot (assertHarnessSchema).
+if run_psql -tAc "select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname in ('job_queue','lead_checkpoints','agent_inbox_items','send_ledger') and c.relkind='r'" 2>/dev/null | grep -q '^4$'; then
+  echo "==> schema já aplicado (tabelas do harness presentes) — pulando passos 1-2"
 else
-  docker run --rm -i -v "$BASELINE_SQL:/baseline.sql:ro" postgres:17-alpine \
-    psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f /baseline.sql
+  # ── passo 1: extensões que o schema usa ────────────────────────────────────
+  echo "==> [1/2] Criando extensões (vector, citext, pg_trgm)..."
+  run_psql -v ON_ERROR_STOP=1 -c \
+    'create extension if not exists vector with schema public;
+     create extension if not exists citext with schema public;
+     create extension if not exists pg_trgm with schema public;'
+  echo "    ok"
+
+  # ── passo 2: baseline.sql (schema completo, idempotente) ───────────────────
+  BASELINE_SQL="${BASELINE_SQL:-$ROOT/supabase/baseline.sql}"
+  if [ ! -f "$BASELINE_SQL" ]; then
+    echo "==> [2/2] Baixando baseline.sql do GitHub (arquivo local ausente)..."
+    BASELINE_SQL="/tmp/baseline-setup-portainer.sql"
+    fetch_url \
+      "https://raw.githubusercontent.com/ViFigueiredo/DeskcommCRM/main/supabase/baseline.sql" \
+      "$BASELINE_SQL"
+  fi
+
+  echo "==> [2/2] Aplicando o schema (baseline.sql) — pode levar 1-2 minutos..."
+  if [ -n "${PSQL_CMD:-}" ]; then
+    run_psql -v ON_ERROR_STOP=1 -f "$BASELINE_SQL"
+  else
+    docker run --rm -i -v "$BASELINE_SQL:/baseline.sql:ro" postgres:17-alpine \
+      psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f /baseline.sql
+  fi
+  echo "    schema aplicado"
 fi
-echo "    schema aplicado"
 
 # ── passo 3: cria o 1º dono + promove a super-admin (idempotente) ────────────
-echo "==> [3/3] Criando o primeiro admin (${OWNER_EMAIL})..."
+echo "==> [3] Criando o primeiro admin (${OWNER_EMAIL})..."
 # 1) Cria o usuário no Supabase Auth. Se já existe, a API responde 422 — ok.
-curl -fsS -X POST "${NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users" \
-  -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-  -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"${OWNER_EMAIL}\",\"password\":\"${OWNER_PASSWORD}\",\"email_confirm\":true}" \
-  >/dev/null 2>&1 || true
+http_post_json "${NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users" \
+  "{\"email\":\"${OWNER_EMAIL}\",\"password\":\"${OWNER_PASSWORD}\",\"email_confirm\":true}" \
+  || true
 
 # 2) Resolve o uid dentro do SQL (funciona para usuário novo OU já existente) e
 #    cria org + membership admin + platform_admin — espelho do install.sh.
@@ -114,7 +150,7 @@ SLUG="$(printf '%s' "$SLUG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' |
 SLUG="${SLUG:0:40}"
 [ -n "$SLUG" ] || SLUG="minha-empresa"
 
-docker run --rm -i postgres:17-alpine psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 <<SQL
+run_psql -v ON_ERROR_STOP=1 <<SQL
 do \$\$
 declare v_org uuid; v_uid uuid;
 begin
@@ -146,5 +182,5 @@ SQL
 echo "    dono criado e promovido a super-admin"
 
 echo ""
-echo "✅ Setup completo. Re-deploye a stack no Portainer — o worker deve subir."
+echo "✅ Setup completo. O worker sobe sozinho (tenta de novo até o schema existir)."
 echo "   Login: ${OWNER_EMAIL} em https://<seu-dominio> e conclua o onboarding."
