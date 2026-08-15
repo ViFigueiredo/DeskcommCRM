@@ -11,6 +11,10 @@
 #   1. aplica o supabase/baseline.sql (idempotente — cria o schema inteiro)
 #   2. cria o 1º dono no Auth + promove a super-admin de plataforma
 #
+# ⚠️ POSIX-sh COMPATÍVEL: roda tanto com `bash` (máquina local, via shebang)
+# quanto com `sh` do busybox (container do serviço `setup` do swarm, que não
+# tem bash). NADA de bashismo: sem ${!var}, sem ${var:0:40}.
+#
 # Ele roda em DOIS contextos, com o mesmo arquivo:
 #   A) Manual, na sua máquina (raiz do repo):
 #        SUPABASE_DB_URL='...pooler.supabase.com:6543/postgres' \
@@ -32,19 +36,21 @@
 # instalar psql no host). Dentro do container do setup, defina PSQL_CMD=psql
 # (já vem no compose) para usar o psql local. curl se existir; senão wget do
 # busybox (presente no postgres:17-alpine).
-set -euo pipefail
+set -eu
+set -o pipefail 2>/dev/null || true   # busybox ash suporta; senão segue sem
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ── leitura de env: processo primeiro, .env/.env.local como fallback ────────
-load_env() {
+load_env() { # key → valor (stdout)
   local key="$1"
-  local val="${!key:-}"
-  [ -n "$val" ] && { echo "$val"; return; }
+  local val
+  val="$(printenv "$key" 2>/dev/null || true)"
+  [ -n "$val" ] && { printf '%s\n' "$val"; return; }
   for f in "$ROOT/.env.local" "$ROOT/.env"; do
     [ -f "$f" ] || continue
-    val=$(grep -E "^${key}=" "$f" | head -1 | cut -d= -f2- || true)
-    [ -n "$val" ] && { echo "$val"; return; }
+    val="$(grep -E "^${key}=" "$f" | head -1 | cut -d= -f2- || true)"
+    [ -n "$val" ] && { printf '%s\n' "$val"; return; }
   done
 }
 
@@ -60,7 +66,7 @@ AI_PROVIDER="${AI_PROVIDER:-}"
 
 MISSING=""
 for v in SUPABASE_DB_URL NEXT_PUBLIC_SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY OWNER_EMAIL OWNER_PASSWORD; do
-  [ -n "${!v:-}" ] || MISSING="$MISSING $v"
+  [ -n "$(printenv "$v" 2>/dev/null || true)" ] || MISSING="$MISSING $v"
 done
 if [ -n "$MISSING" ]; then
   echo "FALTA(M):$MISSING" >&2
@@ -147,7 +153,7 @@ http_post_json "${NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users" \
 #    cria org + membership admin + platform_admin — espelho do install.sh.
 SLUG="$(printf '%s' "$OWNER_ORG_NAME" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || printf '%s' "$OWNER_ORG_NAME")"
 SLUG="$(printf '%s' "$SLUG" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//;s/-*$//')"
-SLUG="${SLUG:0:40}"
+SLUG="$(printf '%s' "$SLUG" | cut -c1-40)"
 [ -n "$SLUG" ] || SLUG="minha-empresa"
 
 run_psql -v ON_ERROR_STOP=1 <<SQL
