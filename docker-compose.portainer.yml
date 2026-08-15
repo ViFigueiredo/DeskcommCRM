@@ -8,8 +8,17 @@
 # - depends_on como lista simples (Portainer requer isto)
 # - Removido pull_policy (o validador de stacks do Portainer rejeita a chave;
 #   para puxar a imagem mais nova, use a opção "Re-pull image" ao atualizar a stack)
+# - env_file: .env → stack.env (ver "Variáveis de ambiente" abaixo)
 #
-#   docker compose -f docker-compose.portainer.yml --env-file .env up -d
+# VARIÁVEIS DE AMBIENTE — POR QUE stack.env E NÃO .env:
+# O .env NÃO está no repositório (gitignored — contém secrets), então um deploy
+# GitOps não o encontra (erro: open .../.env: no such file or directory). No
+# Portainer as variáveis vivem na tela do stack: Stacks → seu stack → editar →
+# Environment variables → "Load variables from .env file" → selecione o seu .env.
+# O Portainer as grava em stack.env na pasta do stack, e este compose injeta via
+# env_file: stack.env. Em CLI (fora do Portainer):
+#
+#   cp .env stack.env && docker compose -f docker-compose.portainer.yml up -d
 
 x-logging: &default-logging
   driver: json-file
@@ -22,7 +31,7 @@ services:
     # Teto de memória — 335 MiB de pico MEDIDO nesta VPS.
     image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
     restart: unless-stopped
-    env_file: .env
+    env_file: stack.env
     depends_on:
       - srh
       - waha
@@ -53,7 +62,7 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     restart: unless-stopped
-    env_file: .env
+    env_file: stack.env
     environment:
       # dentro da rede do compose, o WAHA é o serviço 'waha' na porta interna 3000
       WAHA_API_BASE_URL: http://waha:3000
