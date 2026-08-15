@@ -138,9 +138,12 @@ services:
     environment:
       # dentro da rede do swarm, o WAHA é o serviço 'waha' na porta interna 3000
       WAHA_API_BASE_URL: http://waha:3000
-      # Obrigatórias do worker (lib/agent-engine/env.ts) — mesmo Supabase do app.
+      # Obrigatórias do worker (lib/agent-engine/env.ts + lib/env.ts via lib/ai/embed.ts)
+      # — mesmo Supabase do app. ANON_KEY é requiredAlways no lib/env.ts: sem ela o
+      # worker morre no boot com "expected string, received undefined".
       SUPABASE_DB_URL: ${SUPABASE_DB_URL}
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
       # Chaves LLM de plataforma (opcionais com BYOK; vazias = turno falha com erro instrutivo)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
