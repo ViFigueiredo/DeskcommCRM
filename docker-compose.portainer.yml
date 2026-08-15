@@ -8,17 +8,19 @@
 # - depends_on como lista simples (Portainer requer isto)
 # - Removido pull_policy (o validador de stacks do Portainer rejeita a chave;
 #   para puxar a imagem mais nova, use a opção "Re-pull image" ao atualizar a stack)
-# - env_file: .env → stack.env (ver "Variáveis de ambiente" abaixo)
+# - SEM env_file: em stacks vindas de Git o Portainer não gera o arquivo referenciado
+#   (nem .env, que é gitignored, nem stack.env — issue portainer #10902). As variáveis
+#   vivem na tela do stack (Environment variables) e o compose as captura com
+#   `environment: VAR=${VAR}` (padrão documentado pelo Portainer para interpolação).
 #
-# VARIÁVEIS DE AMBIENTE — POR QUE stack.env E NÃO .env:
-# O .env NÃO está no repositório (gitignored — contém secrets), então um deploy
-# GitOps não o encontra (erro: open .../.env: no such file or directory). No
-# Portainer as variáveis vivem na tela do stack: Stacks → seu stack → editar →
-# Environment variables → "Load variables from .env file" → selecione o seu .env.
-# O Portainer as grava em stack.env na pasta do stack, e este compose injeta via
-# env_file: stack.env. Em CLI (fora do Portainer):
+# VARIÁVEIS DE AMBIENTE — ONDE ELAS VIVEM:
+# No Portainer: Stacks → sua stack → editar → Environment variables. Defina aí (ou
+# "Load variables from .env file" para importar o seu .env). Cada ${VAR} abaixo
+# resolve da UI. Obrigatórias sem default quebram o boot do app com erro claro se
+# ficarem vazias (mesmo comportamento do .env tradicional).
+# Em CLI (fora do Portainer), o mesmo arquivo interpola do seu .env local:
 #
-#   cp .env stack.env && docker compose -f docker-compose.portainer.yml up -d
+#   docker compose -f docker-compose.portainer.yml --env-file .env up -d
 
 x-logging: &default-logging
   driver: json-file
@@ -31,7 +33,82 @@ services:
     # Teto de memória — 335 MiB de pico MEDIDO nesta VPS.
     image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
     restart: unless-stopped
-    env_file: stack.env
+    environment:
+      # --- Supabase (obrigatórias — lib/env.ts) ---
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      # --- Cron / interno ---
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+      INTERNAL_CRON_SECRET: ${INTERNAL_CRON_SECRET:-}
+      # --- Encryption keys (pgcrypto) ---
+      CPF_ENCRYPTION_KEY: ${CPF_ENCRYPTION_KEY}
+      NUVEMSHOP_OAUTH_ENCRYPTION_KEY: ${NUVEMSHOP_OAUTH_ENCRYPTION_KEY:-}
+      WAHA_BYO_ENCRYPTION_KEY: ${WAHA_BYO_ENCRYPTION_KEY}
+      AI_CRED_AES_KEY: ${AI_CRED_AES_KEY}
+      # --- Postgres direto (supabase) ---
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      # --- WAHA ---
+      WAHA_API_BASE_URL: ${WAHA_API_BASE_URL}
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_HMAC_SECRET: ${WAHA_HMAC_SECRET:-}
+      WAHA_WEBHOOK_REQUIRE_SIGNATURE: ${WAHA_WEBHOOK_REQUIRE_SIGNATURE:-false}
+      WAHA_WEBHOOK_BASE_URL: ${WAHA_WEBHOOK_BASE_URL}
+      # --- Upstash Redis ---
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
+      # --- AI providers (opcionais; vazias = agente mudo por config) ---
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      AI_GATEWAY_BASE_URL: ${AI_GATEWAY_BASE_URL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-}
+      VERCEL_AI_GATEWAY_URL: ${VERCEL_AI_GATEWAY_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # --- Workers / dispatcher ---
+      AGENT_DISPATCH_CONSUMER: ${AGENT_DISPATCH_CONSUMER:-engine}
+      EVENT_LOG_WORKER_ENABLED: ${EVENT_LOG_WORKER_ENABLED:-false}
+      INTERNAL_AGENT_RUN_STUB: ${INTERNAL_AGENT_RUN_STUB:-false}
+      # --- Observabilidade ---
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      # --- E-mail (Resend) ---
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      # --- Impersonate ---
+      IMPERSONATE_COOKIE_SECRET: ${IMPERSONATE_COOKIE_SECRET:-}
+      # --- LGPD ---
+      LGPD_SIGNING_KEY: ${LGPD_SIGNING_KEY:-}
+      LGPD_EXPORT_EXPIRES_HOURS: ${LGPD_EXPORT_EXPIRES_HOURS:-72}
+      LGPD_DPO_EMAIL: ${LGPD_DPO_EMAIL:-}
+      # --- Nuvemshop (opcional) ---
+      NUVEMSHOP_ENABLED: ${NUVEMSHOP_ENABLED:-false}
+      NUVEMSHOP_APP_ID: ${NUVEMSHOP_APP_ID:-}
+      NUVEMSHOP_CLIENT_ID: ${NUVEMSHOP_CLIENT_ID:-}
+      NUVEMSHOP_CLIENT_SECRET: ${NUVEMSHOP_CLIENT_SECRET:-}
+      # --- App URLs ---
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+      NEXT_PUBLIC_ADMIN_URL: ${NEXT_PUBLIC_ADMIN_URL}
+      # --- Marca da instalação (white-label) ---
+      APP_NAME: ${APP_NAME:-}
+      APP_LOGO_URL: ${APP_LOGO_URL:-}
+      APP_ACCENT_HEX: ${APP_ACCENT_HEX:-}
+      # --- Meta Cloud API (opcional) ---
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_WABA_ID: ${META_WABA_ID:-}
+      META_PHONE_NUMBER_ID: ${META_PHONE_NUMBER_ID:-}
+      META_SYSTEM_USER_TOKEN: ${META_SYSTEM_USER_TOKEN:-}
+      META_WEBHOOK_VERIFY_TOKEN: ${META_WEBHOOK_VERIFY_TOKEN:-}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v22.0}
+      # --- Canal via intermediário (Zernio, opcional) ---
+      ZERNIO_ACCOUNT_ID: ${ZERNIO_ACCOUNT_ID:-}
+      ZERNIO_API_KEY: ${ZERNIO_API_KEY:-}
+      ZERNIO_API_BASE_URL: ${ZERNIO_API_BASE_URL:-}
+      # --- Janela do retorno agendado (defaults em lib/followup/janela.ts) ---
+      FOLLOWUP_MIN_AHEAD_MS: ${FOLLOWUP_MIN_AHEAD_MS:-}
+      FOLLOWUP_MAX_AHEAD_MS: ${FOLLOWUP_MAX_AHEAD_MS:-}
+      CRON_STAGGER_WINDOW_MS: ${CRON_STAGGER_WINDOW_MS:-}
     depends_on:
       - srh
       - waha
@@ -62,10 +139,30 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     restart: unless-stopped
-    env_file: stack.env
     environment:
       # dentro da rede do compose, o WAHA é o serviço 'waha' na porta interna 3000
       WAHA_API_BASE_URL: http://waha:3000
+      # Obrigatórias do worker (lib/agent-engine/env.ts) — mesmo Supabase do app.
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      # Chaves LLM de plataforma (opcionais com BYOK; vazias = turno falha com erro instrutivo)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Dono único dos dispatchs — 'engine' (default) = este worker consome.
+      AGENT_DISPATCH_CONSUMER: ${AGENT_DISPATCH_CONSUMER:-engine}
+      # Watchdog de sessão (admin-plane do WAHA) — sem key fica OFF (warn).
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      # Janela do retorno agendado — defaults em lib/followup/janela.ts (vazias = default).
+      FOLLOWUP_MIN_AHEAD_MS: ${FOLLOWUP_MIN_AHEAD_MS:-}
+      FOLLOWUP_MAX_AHEAD_MS: ${FOLLOWUP_MAX_AHEAD_MS:-}
+      CRON_STAGGER_WINDOW_MS: ${CRON_STAGGER_WINDOW_MS:-}
+      # Flywheel agendado — 0 = OFF; default 6h.
+      FLYWHEEL_INTERVAL_MS: ${FLYWHEEL_INTERVAL_MS:-}
+      FLYWHEEL_BATCH_LIMIT: ${FLYWHEEL_BATCH_LIMIT:-}
+      # Contenção de egress — hosts EXTRA além do Supabase/WAHA (CSV). Fail-closed.
+      EGRESS_EXTRA_ALLOWED_HOSTS: ${EGRESS_EXTRA_ALLOWED_HOSTS:-}
     networks:
       - internal
     healthcheck:
