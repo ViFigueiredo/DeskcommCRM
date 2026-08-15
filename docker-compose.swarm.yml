@@ -12,15 +12,21 @@
 # certo: rede overlay, deploy.resources no lugar de mem_limit/restart, sem
 # build/depends_on (não suportados por stack deploy).
 #
-# SETUP AUTOMÁTICO (GitOps): o serviço `setup` roda scripts/setup-portainer.sh
-# a cada deploy novo — aplica o baseline.sql e cria o 1º dono, o que o
-# install.sh faz antes de subir o compose e que o Portainer não faz. É
-# one-shot (restart_policy: none): sobe, executa, sai. Com o schema já no
-# banco ele pula os passos de schema e só garante o dono. As credenciais do
-# dono vêm da UI (OWNER_EMAIL / OWNER_PASSWORD — sem default; sem elas o
-# serviço falha visivelmente no Portainer e o worker segue crash-loopando).
-# O worker se recupera sozinho: o assertHarnessSchema faz ele tentar de novo
-# até o schema existir.
+#  Setup automático (GitOps): o serviço `setup` baixa scripts/setup-portainer.sh
+#  do git (raw do main) a cada deploy novo — aplica o baseline.sql e cria o 1º
+#  dono, o que o install.sh faz antes de subir o compose e que o Portainer não
+#  faz. É one-shot (sobe, executa, sai); com o schema já no banco ele pula os
+#  passos de schema e só garante o dono. As credenciais do dono vêm da UI
+#  (OWNER_EMAIL / OWNER_PASSWORD — sem default; sem elas o serviço falha
+#  visivelmente no Portainer e o worker segue crash-loopando). O worker se
+#  recupera sozinho: o assertHarnessSchema faz ele tentar de novo até o schema
+#  existir.
+#
+#  ⚠️ O script é BAIXADO do git, não montado como config: configs de swarm são
+#  imutáveis, e o stack deploy de engines antigos REUSA o config velho — o fix
+#  do script nunca chegava ao container. Baixar do main garante que o deploy
+#  sempre roda a versão nova (medido: wget https do busybox funciona no
+#  postgres:17-alpine).
 #
 # VARIÁVEIS DE AMBIENTE — ONDE ELAS VIVEM:
 # No Portainer: Stacks → sua stack → editar → Environment variables. Cada
@@ -266,7 +272,11 @@ services:
   # Setup único (GitOps) — o install.sh que o Portainer não roda.
   # One-shot: aplica schema + cria o 1º dono e SAI (exit 0). No deploy
   # seguinte com o schema já no banco, o guard interno pula os passos de
-  # schema (rápido) e só re-garante o dono (idempotente).
+  # schema (rápido) e só re-garante o dono (idempotente). O script é BAIXADO
+  # do git a cada execução em vez de montado como config (imutável — engines
+  # antigos reusam o config velho e o fix nunca chegava). Retry on-failure:
+  # falha transitória de rede re-tenta até 3x; erro permanente fica Failed
+  # (visível no Portainer) e volta no próximo deploy.
   setup:
     image: postgres:17-alpine
     environment:
@@ -280,27 +290,20 @@ services:
       OWNER_PASSWORD: ${OWNER_PASSWORD}
       OWNER_ORG_NAME: ${OWNER_ORG_NAME:-Minha Empresa}
       AI_PROVIDER: ${AI_PROVIDER:-}
-    configs:
-      - source: setup_portainer_sh
-        target: /setup-portainer.sh
-        mode: 0555
-    command: ["sh", "/setup-portainer.sh"]
+    command:
+      - sh
+      - -c
+      - wget -q -O /setup.sh https://raw.githubusercontent.com/ViFigueiredo/DeskcommCRM/main/scripts/setup-portainer.sh && sh /setup.sh
     networks: [internal]
     deploy:
       replicas: 1
       restart_policy:
-        condition: none
+        condition: on-failure
+        max_attempts: 3
 
 volumes:
   waha-data:
   waha-media:
-
-configs:
-  # O script de setup (montado read-only no serviço `setup`). Em engines
-  # modernos (Docker 25+) o stack deploy versiona o config por hash de
-  # conteúdo: mudou o script, o deploy seguinte já usa o novo.
-  setup_portainer_sh:
-    file: ./scripts/setup-portainer.sh
 
 networks:
   internal:
