@@ -74,12 +74,21 @@ if [ -n "$MISSING" ]; then
   exit 1
 fi
 
+# psql (libpq) rejeita o parâmetro `pgbouncer=true` que o painel do Supabase
+# acrescenta à string do TRANSACTION pooler (porta 6543): "invalid URI query
+# parameter". E 6543 é modo transação — inadequado para o baseline (DDL e
+# multi-statement). Para o psql, normaliza para o SESSION pooler: mesma
+# credencial (postgres.<projeto>), sem query string e porta 5432.
+# O app/worker NÃO usam esta normalização — o node-postgres aceita a string
+# original com pgbouncer=true (a stack passa SUPABASE_DB_URL como está).
+PSQL_URL="$(printf '%s' "$SUPABASE_DB_URL" | sed -E 's/\?.*$//; s#:6543/#:5432/#')"
+
 # psql via Docker (default) ou local se PSQL_CMD definido
 run_psql() { # args do psql
   if [ -n "${PSQL_CMD:-}" ]; then
-    "$PSQL_CMD" "$SUPABASE_DB_URL" "$@"
+    "$PSQL_CMD" "$PSQL_URL" "$@"
   else
-    docker run --rm -i postgres:17-alpine psql "$SUPABASE_DB_URL" "$@"
+    docker run --rm -i postgres:17-alpine psql "$PSQL_URL" "$@"
   fi
 }
 
