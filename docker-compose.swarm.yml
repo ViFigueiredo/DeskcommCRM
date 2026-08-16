@@ -45,7 +45,13 @@ x-logging: &default-logging
 services:
   app:
     # Teto de memória — 335 MiB de pico MEDIDO nesta VPS.
-    image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
+    # ⚠️ `stable` é a última RELEASE do upstream e ainda NÃO contém a regra de
+    # MFA opcional (lib/auth/politica-mfa.ts) — com ela, o app força o dono a
+    # cadastrar TOTP ignorando o banco. Medido na imagem (grep no bundle):
+    # `stable` não tem `plataformaExige`; `latest` (topo da main) tem. Apontamos
+    # para `latest` até o upstream lançar a release com o fix — aí volte para
+    # `stable`. Override sem commit: env APP_IMAGE na UI do Portainer.
+    image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:latest}
     environment:
       # --- Supabase (obrigatórias — lib/env.ts) ---
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
