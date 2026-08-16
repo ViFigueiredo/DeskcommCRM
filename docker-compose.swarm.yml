@@ -197,10 +197,10 @@ services:
 
   waha:
     # Teto de memória — 893 MiB de pico MEDIDO nesta VPS.
-    # Tag fixa e recente: o WhatsApp bloqueia builds antigos do WAHA e o sintoma
-    # é QR que regenera rápido e nunca pareia. Suba a tag quando o WhatsApp
-    # invalidar a atual (override sem commit: env WAHA_IMAGE na UI do Portainer).
-    image: ${WAHA_IMAGE:-devlikeapro/waha:latest-2026.8.1}
+    # O WhatsApp bloqueia builds antigos do WAHA e o sintoma é QR que regenera
+    # rápido e nunca pareia. Em :latest o docker pull sempre traz o build novo
+    # (override sem commit: env WAHA_IMAGE na UI do Portainer).
+    image: ${WAHA_IMAGE:-devlikeapro/waha:latest}
     environment:
       # Prefixo sha512: faz o WAHA HASHEAR o X-Api-Key recebido e comparar com este
       # hash. Sem o prefixo ele compara literal → o app (que manda o plaintext) toma 401.
