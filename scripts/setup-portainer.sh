@@ -188,9 +188,17 @@ begin
   insert into public.user_organizations (user_id, organization_id, role, accepted_at)
   values (v_uid, v_org, 'admin', now())
   on conflict (user_id, organization_id) do update set role='admin', revoked_at=null;
+  -- `mfa_required = false` EXPLÍCITO, contra o default `true` da coluna —
+  -- espelho do bootstrap-owner.ts. Sem isto o dono cai no gate de MFA de
+  -- tela cheia logo depois do onboarding (exigeCadastroDeMfa lê a coluna).
   if not exists (select 1 from public.platform_admins where user_id=v_uid and revoked_at is null) then
-    insert into public.platform_admins (user_id, granted_by, scope, reason)
-    values (v_uid, v_uid, 'full', 'Bootstrap inicial do self-host');
+    insert into public.platform_admins (user_id, granted_by, scope, mfa_required, reason)
+    values (v_uid, v_uid, 'full', false, 'Bootstrap inicial do self-host');
+  else
+    -- Cobre instalações que já subiram com o default `true` (bug antigo deste
+    -- script): re-executar o setup conserta a linha existente do dono.
+    update public.platform_admins set mfa_required = false
+     where user_id = v_uid and revoked_at is null;
   end if;
 end \$\$;
 SQL
